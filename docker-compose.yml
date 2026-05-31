@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  video-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: video-api
+    ports:
+      - "3000:3000"
+    environment:
+      FIREBASE_SERVICE_ACCOUNT: '${FIREBASE_SERVICE_ACCOUNT}'
+      PORT: 3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - /tmp:/tmp
+    networks:
+      - video-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  video-net:
+    driver: bridge
