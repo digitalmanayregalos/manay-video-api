@@ -44,8 +44,11 @@ async function sendErrorAlert(functionality, component, reason, stackTrace) {
     const smtpUser = process.env.SMTP_USER;
     const smtpPassword = process.env.SMTP_PASSWORD;
 
+    console.log('📧 Verificando SMTP config:', { host: !!smtpHost, user: !!smtpUser, pass: !!smtpPassword });
+
     if (!smtpHost || !smtpUser || !smtpPassword) {
-      console.warn('SMTP no está configurado - no se enviarán alertas por email');
+      console.warn('⚠️ SMTP no está configurado - no se enviarán alertas por email');
+      console.warn('Variables disponibles:', Object.keys(process.env).filter(k => k.includes('SMTP')));
       return;
     }
 
@@ -56,7 +59,9 @@ async function sendErrorAlert(functionality, component, reason, stackTrace) {
       auth: {
         user: smtpUser,
         pass: smtpPassword
-      }
+      },
+      connectionTimeout: 10000,
+      socketTimeout: 10000
     });
 
     const emailBody = `
@@ -91,7 +96,52 @@ ${stackTrace}
     await transporter.sendMail(mailOptions);
     console.log('✉️ Alerta de error enviada a:', ALERT_RECIPIENTS);
   } catch (emailError) {
-    console.error('Error enviando alerta por email:', emailError);
+    console.error('❌ Error enviando alerta por email:', emailError.message);
+  }
+}
+
+// Helper: Enviar correo de notificación (éxito)
+async function sendNotificationEmail(subject, message, details = {}) {
+  try {
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = process.env.SMTP_PORT;
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPassword = process.env.SMTP_PASSWORD;
+
+    if (!smtpHost || !smtpUser || !smtpPassword) {
+      console.warn('SMTP no está configurado');
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: parseInt(smtpPort || '995'),
+      secure: true,
+      auth: { user: smtpUser, pass: smtpPassword },
+      connectionTimeout: 10000,
+      socketTimeout: 10000
+    });
+
+    const emailBody = `
+${message}
+
+${Object.entries(details).map(([key, value]) => `${key}: ${value}`).join('\n')}
+
+⏰ Timestamp: ${new Date().toISOString()}
+    `;
+
+    const mailOptions = {
+      from: smtpUser,
+      to: ALERT_RECIPIENTS.join(', '),
+      subject: subject,
+      text: emailBody,
+      html: emailBody.replace(/\n/g, '<br>')
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log('✉️ Notificación enviada:', subject);
+  } catch (emailError) {
+    console.error('❌ Error enviando notificación:', emailError.message);
   }
 }
 
@@ -156,6 +206,18 @@ app.post('/api/generate-video', async (req, res) => {
       });
 
       console.log(`[${jobId}] ✅ Video generado: ${videoUrl}`);
+
+      // Enviar notificación de éxito
+      await sendNotificationEmail(
+        '✅ VIDEO GENERADO: Tarjeta Virtual Lista',
+        '✅ El video de la tarjeta virtual ha sido generado exitosamente',
+        {
+          'Gift ID': giftId,
+          'Job ID': jobId,
+          'Video URL': videoUrl,
+          'Timestamp': new Date().toISOString()
+        }
+      );
 
       // Limpiar temporales
       fs.rmSync(workDir, { recursive: true });
