@@ -7,6 +7,7 @@ import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
@@ -32,6 +33,67 @@ try {
 
 const db = firebaseInitialized ? admin.firestore() : null;
 const bucket = firebaseInitialized ? admin.storage().bucket('maia---manay-regalos.firebasestorage.app') : null;
+
+const ALERT_RECIPIENTS = ['juanceronb@gmail.com', 'dianar.daza@gmail.com'];
+
+// Helper: Enviar alerta por email en caso de error
+async function sendErrorAlert(functionality, component, reason, stackTrace) {
+  try {
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = process.env.SMTP_PORT;
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPassword = process.env.SMTP_PASSWORD;
+
+    if (!smtpHost || !smtpUser || !smtpPassword) {
+      console.warn('SMTP no está configurado - no se enviarán alertas por email');
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: parseInt(smtpPort || '995'),
+      secure: true, // SSL
+      auth: {
+        user: smtpUser,
+        pass: smtpPassword
+      }
+    });
+
+    const emailBody = `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌⚠️🚨 ALERTA DE ERROR DEL SISTEMA
+
+📌 Funcionalidad Afectada:
+${functionality}
+
+🔧 Componente Tecnológico:
+${component}
+
+❌ Razón de la Falla:
+${reason}
+
+📋 Stack Trace:
+${stackTrace}
+
+⏰ Timestamp: ${new Date().toISOString()}
+🌍 Proyecto: Tarjeta Virtual Día del Padre
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    `;
+
+    const mailOptions = {
+      from: smtpUser,
+      to: ALERT_RECIPIENTS.join(', '),
+      subject: '❌⚠️🚨 ERROR: Creación de Tarjeta Virtual',
+      text: emailBody,
+      html: emailBody.replace(/\n/g, '<br>')
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log('✉️ Alerta de error enviada a:', ALERT_RECIPIENTS);
+  } catch (emailError) {
+    console.error('Error enviando alerta por email:', emailError);
+  }
+}
 
 // Temporales
 const TEMP_DIR = '/tmp/video-generation';
@@ -127,6 +189,15 @@ app.post('/api/generate-video', async (req, res) => {
     }
   } catch (error) {
     console.error('API Error:', error);
+
+    // Enviar alerta por email
+    await sendErrorAlert(
+      'Generación de video MP4 con FFmpeg',
+      'Video Generation API Server',
+      error.message,
+      error.stack || 'No stack trace disponible'
+    );
+
     res.status(500).json({
       error: error.message || 'Error generando video'
     });
