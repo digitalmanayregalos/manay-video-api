@@ -276,7 +276,7 @@ async function uploadToCloudStorage(localPath, giftId, jobId) {
     const [url] = await file.getSignedUrl({
       version: 'v4',
       action: 'read',
-      expires: Date.now() + 1000 * 60 * 60 * 24 * 365 // 1 año
+      expires: Date.now() + 1000 * 60 * 60 * 24 * 7 // 7 días máximo
     });
 
     console.log(`[${jobId}] ✅ URL generada`);
