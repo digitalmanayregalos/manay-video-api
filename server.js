@@ -31,7 +31,7 @@ try {
 }
 
 const db = firebaseInitialized ? admin.firestore() : null;
-const bucket = firebaseInitialized ? admin.storage().bucket() : null;
+const bucket = firebaseInitialized ? admin.storage().bucket('maia---manay-regalos.firebasestorage.app') : null;
 
 // Temporales
 const TEMP_DIR = '/tmp/video-generation';
