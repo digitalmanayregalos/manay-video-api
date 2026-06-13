@@ -266,15 +266,47 @@ app.post('/api/generate-video', async (req, res) => {
   }
 });
 
+// Helper: Normalizar imagen con FFmpeg
+async function normalizeImage(inputPath, outputPath, jobId) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', inputPath,
+      '-vf', 'format=yuv420p',
+      '-q:v', '2',
+      outputPath
+    ]);
+
+    ffmpeg.stderr.on('data', (data) => {
+      const msg = data.toString().trim();
+      if (msg.includes('error') || msg.includes('Error')) {
+        console.warn(`[${jobId}] FFmpeg normalize warning:`, msg.slice(0, 100));
+      }
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        resolve(outputPath);
+      } else {
+        reject(new Error(`Failed to normalize image: exit code ${code}`));
+      }
+    });
+
+    ffmpeg.on('error', reject);
+  });
+}
+
 // Helper: Descargar media de URLs
 async function downloadMedia(images = [], videos = [], workDir) {
   const files = [];
 
+  // Procesar imágenes
   for (let i = 0; i < images.length; i++) {
     try {
-      const imagePath = path.join(workDir, `image_${i}.jpg`);
+      const tempPath = path.join(workDir, `image_${i}_temp.jpg`);
+      const normalizedPath = path.join(workDir, `image_${i}.jpg`);
+
       const response = await axios.get(images[i], { responseType: 'stream', timeout: 30000 });
-      const stream = fs.createWriteStream(imagePath);
+      const stream = fs.createWriteStream(tempPath);
       response.data.pipe(stream);
 
       await new Promise((resolve, reject) => {
@@ -282,13 +314,18 @@ async function downloadMedia(images = [], videos = [], workDir) {
         stream.on('error', reject);
       });
 
-      files.push({ type: 'image', path: imagePath });
-      console.log(`✅ Descargada imagen ${i}`);
+      // Normalizar imagen
+      await normalizeImage(tempPath, normalizedPath, `image-${i}`);
+      fs.unlinkSync(tempPath); // Eliminar temporal
+
+      files.push({ type: 'image', path: normalizedPath });
+      console.log(`✅ Descargada y normalizada imagen ${i}`);
     } catch (err) {
-      console.warn(`⚠️ Error descargando imagen ${i}:`, err.message);
+      console.warn(`⚠️ Error procesando imagen ${i}:`, err.message);
     }
   }
 
+  // Procesar videos
   for (let i = 0; i < videos.length; i++) {
     try {
       const videoPath = path.join(workDir, `video_${i}.mp4`);
@@ -318,29 +355,29 @@ async function generateVideo(mediaFiles, message, title, workDir, jobId) {
   // Duración por archivo
   const durPerFile = 5; // segundos
 
-  // Construir filtro FFmpeg
+  // Construir filtro FFmpeg - versión mejorada con formato normalizado
   let filterComplex = '';
-  let fileIndex = 0;
 
-  for (const file of mediaFiles) {
+  for (let i = 0; i < mediaFiles.length; i++) {
+    const file = mediaFiles[i];
     if (file.type === 'image') {
-      // Imagen estática 5 segundos
-      filterComplex += `[${fileIndex}]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=0.5,fade=t=out:st=${durPerFile - 0.5}:d=0.5[v${fileIndex}];`;
+      // Imagen: asegurar conversión correcta a yuv420p
+      filterComplex += `[${i}]format=yuv420p,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fade=t=in:st=0:d=0.5,fade=t=out:st=${durPerFile - 0.5}:d=0.5[v${i}];`;
     } else {
-      // Video - escalar
-      filterComplex += `[${fileIndex}]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[v${fileIndex}];`;
+      // Video: asegurar formato compatible
+      filterComplex += `[${i}]format=yuv420p,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1:1[v${i}];`;
     }
-    fileIndex++;
   }
 
-  // Concatenar videos
-  filterComplex += `${mediaFiles.map((_, i) => `[v${i}]`).join('')}concat=n=${mediaFiles.length}:v=1[out]`;
+  // Concatenar: importante especificar a=0 para ignorar audio
+  filterComplex += `${mediaFiles.map((_, i) => `[v${i}]`).join('')}concat=n=${mediaFiles.length}:v=1:a=0[out]`;
 
   // Argumentos FFmpeg
-  const ffmpegArgs = [];
+  const ffmpegArgs = ['-y']; // Overwrite output
 
   // Inputs
-  for (const file of mediaFiles) {
+  for (let i = 0; i < mediaFiles.length; i++) {
+    const file = mediaFiles[i];
     if (file.type === 'image') {
       ffmpegArgs.push('-loop', '1', '-t', String(durPerFile), '-i', file.path);
     } else {
@@ -348,12 +385,16 @@ async function generateVideo(mediaFiles, message, title, workDir, jobId) {
     }
   }
 
-  // Filtro
+  // Filtro y codec
   ffmpegArgs.push('-filter_complex', filterComplex);
   ffmpegArgs.push('-map', '[out]');
   ffmpegArgs.push('-c:v', 'libx264', '-crf', '23', '-preset', 'medium');
+  ffmpegArgs.push('-pix_fmt', 'yuv420p');
   ffmpegArgs.push('-r', '30');
+  ffmpegArgs.push('-movflags', '+faststart');
   ffmpegArgs.push(outputPath);
+
+  console.log(`[${jobId}] FFmpeg filter: ${filterComplex.slice(0, 200)}...`);
 
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', ffmpegArgs);
@@ -373,7 +414,8 @@ async function generateVideo(mediaFiles, message, title, workDir, jobId) {
         reject(new Error(`FFmpeg exited with code ${code}`));
       } else {
         if (fs.existsSync(outputPath)) {
-          console.log(`[${jobId}] ✅ FFmpeg generó video (${fs.statSync(outputPath).size} bytes)`);
+          const size = fs.statSync(outputPath).size;
+          console.log(`[${jobId}] ✅ FFmpeg generó video exitosamente (${(size / 1024 / 1024).toFixed(2)} MB)`);
           resolve(outputPath);
         } else {
           reject(new Error('FFmpeg no generó el archivo de output'));
